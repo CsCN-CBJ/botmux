@@ -28,6 +28,10 @@
 
 Daemon 监听飞书消息，为每个新会话自动 spawn 一个独立的会话进程，把 AI 编程 CLI / Agent 的输出实时流式回传成飞书卡片，并提供可交互的 Web 终端。它**不重造 Agent 能力**，而是直接桥接你已经在用的工具（**20+ CLI / Agent 适配器**，见 [支持的 CLI / Agent](#支持的-cli--agent)）。
 
+## QQ 官方机器人桥接（CodeBuddy / Codex / Claude Code）
+
+本仓库另含一个独立的 **QQ 官方机器人桥接**（入口 `src/qq-daemon.ts`），支持将 QQ 群聊 / 私聊消息接入 CodeBuddy、Codex 或 Claude Code，并按配置复用原生会话。详细部署、私密配置、PM2 守护与排障指南见 **[README.qq-codebuddy.md](README.qq-codebuddy.md)**。
+
 ## 它解决什么
 
 - **Agent 收不到通知、手机控不了** — CLI 跑在开发机上，人在手机上。botmux 把每轮输出推成飞书卡片，随时随地查看 / 追问 / 打断，还能开可写 Web 终端直接操作。
