@@ -8,7 +8,7 @@
  * Run:  pnpm vitest run test/schedule-store.test.ts
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync,
+import {
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -16,7 +16,7 @@ import { mkdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 // ─── Shared state ────────────────────────────────────────────────────────────
@@ -25,25 +25,17 @@ let tempDir: string;
 
 // ─── Mocks ───────────────────────────────────────────────────────────────────
 
-// Mock config so dataDir points to our temp directory. `tempDir` acts as the
-// botmux home root: dataDir = <tempDir>/data, so the per-bot store lands at
-// <tempDir>/bots/<appId>/schedules.json (inside the cleaned-up temp tree).
+// Mock config so dataDir points to our temp directory.
 // We update tempDir in beforeEach; the getter ensures the latest value is used.
 vi.mock('../src/config.js', () => ({
   config: {
     session: {
       get dataDir() {
-        return join(tempDir, 'data');
+        return tempDir;
       },
     },
   },
 }));
-
-const TEST_APP = 'cli_testapp0000000001';
-/** The per-bot store file for the bound test bot. */
-function storeFp(appId: string = TEST_APP): string {
-  return join(tempDir, 'bots', appId, 'schedules.json');
-}
 
 // Suppress log output during tests.
 vi.mock('../src/utils/logger.js', () => ({
@@ -73,9 +65,7 @@ const TASK_PARAMS = {
  */
 async function freshImport() {
   vi.resetModules();
-  const mod = await import('../src/services/schedule-store.js');
-  mod.setScheduleScope(TEST_APP);
-  return mod;
+  return import('../src/services/schedule-store.js');
 }
 
 // ─── Lifecycle ───────────────────────────────────────────────────────────────
@@ -117,7 +107,7 @@ describe('schedule-store', () => {
       const { createTask } = await freshImport();
       createTask(TASK_PARAMS);
 
-      const fp = storeFp();
+      const fp = join(tempDir, 'schedules.json');
       expect(existsSync(fp)).toBe(true);
 
       const data = JSON.parse(readFileSync(fp, 'utf-8'));
@@ -162,7 +152,7 @@ describe('schedule-store', () => {
       expect(loudTask.silent).toBeUndefined();
       expect(legacyTask.silent).toBeUndefined();
 
-      const data = JSON.parse(readFileSync(storeFp(), 'utf-8'));
+      const data = JSON.parse(readFileSync(join(tempDir, 'schedules.json'), 'utf-8'));
       expect(data[silentTask.id].silent).toBe(true);
       expect('silent' in data[loudTask.id]).toBe(false);
     });
@@ -222,7 +212,7 @@ describe('schedule-store', () => {
       const task = createTask(TASK_PARAMS);
       removeTask(task.id);
 
-      const fp = storeFp();
+      const fp = join(tempDir, 'schedules.json');
       const data = JSON.parse(readFileSync(fp, 'utf-8'));
       expect(Object.keys(data)).toHaveLength(0);
     });
@@ -280,8 +270,7 @@ describe('schedule-store', () => {
     });
 
     it('migrates a legacy new-topic row to explicit fresh-topic execution', async () => {
-      const fp = storeFp();
-      mkdirSync(dirname(fp), { recursive: true });
+      const fp = join(tempDir, 'schedules.json');
       writeFileSync(fp, JSON.stringify({
         legacy: {
           ...TASK_PARAMS,
@@ -304,7 +293,7 @@ describe('schedule-store', () => {
       const task = createTask(TASK_PARAMS);
       updateTask(task.id, { enabled: false });
 
-      const fp = storeFp();
+      const fp = join(tempDir, 'schedules.json');
       const data = JSON.parse(readFileSync(fp, 'utf-8'));
       expect(data[task.id].enabled).toBe(false);
     });
@@ -388,7 +377,7 @@ describe('schedule-store', () => {
       const modern = store1.createTask({ ...TASK_PARAMS, id: 'modern-scope', scope: 'thread' });
       expect(modern.scope).toBe('thread');
 
-      const fp = storeFp();
+      const fp = join(tempDir, 'schedules.json');
       const onDisk = JSON.parse(readFileSync(fp, 'utf-8'));
       onDisk['legacy-scope'] = {
         id: 'legacy-scope',
@@ -423,7 +412,7 @@ describe('schedule-store', () => {
     it('rolls back memory and disk when persistence fails before rename', async () => {
       const store = await freshImport();
       const original = store.createTask({ ...TASK_PARAMS, id: 'durable-original' });
-      const fp = storeFp();
+      const fp = join(tempDir, 'schedules.json');
       const before = readFileSync(fp, 'utf-8');
 
       store.__setScheduleStoreBeforeRenameTestHook(() => {
@@ -455,7 +444,7 @@ describe('schedule-store', () => {
       store1.createTask({ ...TASK_PARAMS, id: 'from-store-1-b', name: 'one-b' });
       store2.createTask({ ...TASK_PARAMS, id: 'from-store-2', name: 'two' });
 
-      const persisted = JSON.parse(readFileSync(storeFp(), 'utf-8'));
+      const persisted = JSON.parse(readFileSync(join(tempDir, 'schedules.json'), 'utf-8'));
       expect(Object.keys(persisted).sort()).toEqual([
         'from-store-1-a',
         'from-store-1-b',
@@ -504,14 +493,14 @@ describe('schedule-store', () => {
       const { createTask } = await freshImport();
       createTask(TASK_PARAMS);
 
-      expect(existsSync(join(nestedDir, 'bots', TEST_APP, 'schedules.json'))).toBe(true);
+      expect(existsSync(join(nestedDir, 'schedules.json'))).toBe(true);
     });
 
     it('should handle an empty JSON file gracefully on reload', async () => {
       // Write an empty (but valid) JSON object
       const { writeFileSync, mkdirSync } = await import('node:fs');
-      mkdirSync(dirname(storeFp()), { recursive: true });
-      writeFileSync(storeFp(), '{}', 'utf-8');
+      mkdirSync(tempDir, { recursive: true });
+      writeFileSync(join(tempDir, 'schedules.json'), '{}', 'utf-8');
 
       const { listTasks } = await freshImport();
       expect(listTasks()).toEqual([]);
@@ -519,8 +508,8 @@ describe('schedule-store', () => {
 
     it('should handle a corrupted JSON file gracefully', async () => {
       const { writeFileSync, mkdirSync } = await import('node:fs');
-      mkdirSync(dirname(storeFp()), { recursive: true });
-      writeFileSync(storeFp(), '<<<not json>>>', 'utf-8');
+      mkdirSync(tempDir, { recursive: true });
+      writeFileSync(join(tempDir, 'schedules.json'), '<<<not json>>>', 'utf-8');
 
       const { listTasks } = await freshImport();
       // Should recover with an empty store instead of throwing
@@ -532,7 +521,7 @@ describe('schedule-store', () => {
       createTask(TASK_PARAMS);
 
       expect(existsSync(join(tempDir, 'schedules.json.tmp'))).toBe(false);
-      expect(existsSync(storeFp())).toBe(true);
+      expect(existsSync(join(tempDir, 'schedules.json'))).toBe(true);
     });
   });
 });

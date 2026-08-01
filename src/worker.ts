@@ -45,12 +45,6 @@ import {
   shouldWaitForPostSessionStartPromptEvidence,
   shouldWriteNow,
 } from './utils/input-gate.js';
-import {
-  decideCodexRunnerFreshness,
-  CodexRunnerFreshnessInputQueue,
-  shouldHoldCodexRunnerInput,
-  type CodexRunnerFreshnessState,
-} from './services/codex-runner-freshness.js';
 import { canStartInjectionFlush, shouldDeferUserFlush, shouldFlushInjectionsFirst, type PendingInjection } from './core/inject-queue-policy.js';
 import { decideRestartFollowup, settleDurableTurnForRestart } from './core/restart-followup-policy.js';
 import { stripAnsiForLog, tailChars } from './utils/crash-log.js';
@@ -250,11 +244,6 @@ import { fetchDaemonIpc } from './core/daemon-ipc-auth.js';
 import { withCodexAppContext } from './utils/codex-app-context.js';
 import { resolveCodexAppFinalTurnIdentity } from './adapters/cli/codex-app-turn.js';
 import { RunnerControlDecoder } from './adapters/cli/runner-control-channel.js';
-import {
-  normalizeAppRunnerFinalMarker,
-  normalizeCodexAppLifecycleEvent,
-  projectAppRunnerFinalIds,
-} from './services/codex-app-runner-protocol.js';
 import {
   hasMatchingManagedOriginCapability,
   managedOriginCapabilityPath,
@@ -1077,12 +1066,6 @@ const IDLE_PROBE_INTERVAL_MS = 3_500;
 const IDLE_PROBE_MAX_ATTEMPTS = 24;
 let busyPatternIdleProbeTimer: ReturnType<typeof setTimeout> | null = null;
 let reattachIdleProbeTimer: ReturnType<typeof setTimeout> | null = null;
-let codexRunnerFreshness: CodexRunnerFreshnessState = 'current';
-let persistCodexRunnerBuildOnReady = false;
-let activeRestartAttemptId: string | undefined;
-/** Distinguishes a replacement's synchronous ready signal (Riff) from a late
- * idle callback emitted by the backend being torn down. */
-let replacementSpawnInProgress = false;
 /** The effectiveResume flag used by the most recent spawnCli call. Written
  *  immediately after the two-tier fallback check so late-attach timers
  *  (hermes, cursor, etc.) can read THE SAME semantics the spawn used,
@@ -1206,7 +1189,7 @@ let lastInitConfig: Extract<DaemonToWorker, { type: 'init' }> | null = null;
 let capturedSpawnCommand: string | null = null;
 let deferredTopicOutputTail = '';
 const reportedDeferredTopicRoots = new Set<string>();
-const CLI_DISPLAY_NAMES: Record<string, string> = { 'claude-code': 'Claude', seed: 'Seed', relay: 'Relay', aiden: 'Aiden', coco: 'CoCo', codex: 'Codex', 'codex-app': 'Codex App', cursor: 'Cursor', gemini: 'Gemini', genius: 'Genius', opencode: 'OpenCode', antigravity: 'Antigravity', mtr: 'MTR', hermes: 'Hermes', mira: 'Mira', mir: 'Mir CLI', traex: 'TRAE', pi: 'Pi', copilot: 'Copilot', 'oh-my-pi': 'Oh My Pi', kimi: 'Kimi', grok: 'Grok Build', 'kiro-cli': 'Kiro', riff: 'Riff' };
+const CLI_DISPLAY_NAMES: Record<string, string> = { 'claude-code': 'Claude', seed: 'Seed', relay: 'Relay', aiden: 'Aiden', coco: 'CoCo', codex: 'Codex', 'codex-app': 'Codex App', cursor: 'Cursor', gemini: 'Gemini', genius: 'Genius', opencode: 'OpenCode', antigravity: 'Antigravity', mtr: 'MTR', hermes: 'Hermes', mira: 'Mira', mir: 'Mir CLI', traex: 'TRAE', pi: 'Pi', copilot: 'Copilot', 'oh-my-pi': 'Oh My Pi', kimi: 'Kimi', grok: 'Grok Build', 'kiro-cli': 'Kiro', riff: 'Riff', codebuddy: 'CodeBuddy' };
 function cliName(): string { return CLI_DISPLAY_NAMES[lastInitConfig?.cliId ?? ''] ?? 'CLI'; }
 let isPromptReady = false;
 /** Mutex for async flushPending — prevents concurrent flush loops. */
@@ -1482,46 +1465,11 @@ async function runStartupCommands(): Promise<void> {
   idleDetector?.reset();
 }
 
-const freshnessInputQueue = new CodexRunnerFreshnessInputQueue<
-  PendingCliInput,
-  Extract<DaemonToWorker, { type: 'raw_input' }>
->(
-  () => codexRunnerFreshness,
-  state => { codexRunnerFreshness = state; },
-);
-const pendingMessages = freshnessInputQueue.normal;
-/** Correlation ids that this worker actually wrote into the owned Codex App
- * runner. Runner lifecycle/final markers may route only to ids in this bounded
- * local set; model/user display bytes cannot add entries. */
-const submittedCodexAppReplyTurnIds = new Set<string>();
-const pendingCodexAppSteerAckIds = new Map<string, string>();
-const acknowledgedCodexAppSteers = new Set<string>();
-const CODEX_APP_CORRELATION_LIMIT = 256;
-function rememberBounded(set: Set<string>, value: string): void {
-  set.delete(value);
-  set.add(value);
-  while (set.size > CODEX_APP_CORRELATION_LIMIT) {
-    const oldest = set.values().next().value;
-    if (typeof oldest !== 'string') break;
-    set.delete(oldest);
-  }
-}
-function rememberBoundedMap(map: Map<string, string>, key: string, value: string): void {
-  map.delete(key);
-  map.set(key, value);
-  while (map.size > CODEX_APP_CORRELATION_LIMIT) {
-    const oldest = map.keys().next().value;
-    if (typeof oldest !== 'string') break;
-    map.delete(oldest);
-  }
-}
-function shortCorrelationId(value: string | undefined): string {
-  return value?.slice(0, 12) ?? '-';
-}
+const pendingMessages: PendingCliInput[] = [];
 /** Literal commands that arrived while native /rename owned the TUI or while
  * an owned CLI restart was fenced. Normal raw_input commands are still
  * delivered immediately (including while busy). */
-const pendingRawInputs = freshnessInputQueue.raw;
+const pendingRawInputs: Array<Extract<DaemonToWorker, { type: 'raw_input' }>> = [];
 /** Latest requested canonical session title. Unlike a normal prompt this is an
  * administrative TUI command: never type-ahead while the agent is busy, never
  * open a model turn, and latest-wins if several renames arrive before idle. */
@@ -4884,89 +4832,9 @@ function handleCodexAppMarker(body: string): void {
     return;
   }
 
-  if (kind === 'lifecycle') {
-    const event = normalizeCodexAppLifecycleEvent(payload);
-    if (!event) {
-      log(`${cliName()} rejected malformed lifecycle marker`);
-      return;
-    }
-    log(
-      `${cliName()} lifecycle kind=${event.kind}`
-      + ` appTurn=${shortCorrelationId(event.appTurnId)}`
-      + ` replyTurn=${shortCorrelationId(event.replyTurnId)}`
-      + `${event.queueLength !== undefined ? ` queue=${event.queueLength}` : ''}`,
-    );
-    if (!event.replyTurnId || !submittedCodexAppReplyTurnIds.has(event.replyTurnId)) return;
-    if (event.kind === 'steer_attempt') {
-      rememberBoundedMap(pendingCodexAppSteerAckIds, event.replyTurnId, event.appTurnId);
-      return;
-    }
-    const steerKey = `${event.appTurnId}\0${event.replyTurnId}`;
-    if (event.kind !== 'steer_accepted'
-      || pendingCodexAppSteerAckIds.get(event.replyTurnId) !== event.appTurnId
-      || acknowledgedCodexAppSteers.has(steerKey)) return;
-    pendingCodexAppSteerAckIds.delete(event.replyTurnId);
-    rememberBounded(acknowledgedCodexAppSteers, steerKey);
-    send({
-      type: 'steer_accepted',
-      appTurnId: event.appTurnId,
-      turnId: event.replyTurnId,
-    });
-    return;
-  }
-
-  if (kind === 'final') {
-    const marker = normalizeAppRunnerFinalMarker(payload);
-    if (!marker) {
-      log(`${cliName()} rejected malformed final marker`);
-      return;
-    }
-    const startedAtMs = marker.startedAtMs;
-    const completedAtMs = marker.completedAtMs ?? Date.now();
-    if (marker.appTurnId) {
-      const trustedReplyTurnId = marker.replyTurnId
-        && submittedCodexAppReplyTurnIds.has(marker.replyTurnId)
-        ? marker.replyTurnId
-        : undefined;
-      if (marker.replyTurnId && !trustedReplyTurnId) {
-        log(
-          `${cliName()} ignored unsubmitted final reply route `
-          + `(replyTurn=${shortCorrelationId(marker.replyTurnId)})`,
-        );
-      }
-      const identity = projectAppRunnerFinalIds(
-        { ...marker, replyTurnId: trustedReplyTurnId },
-        currentBotmuxTurnId,
-        `${lastInitConfig?.cliId ?? 'app'}-${Date.now()}`,
-      );
-      if (marker.appTurnId !== identity.turnId) {
-        log(
-          `${cliName()} app turn ${shortCorrelationId(marker.appTurnId)} mapped `
-          + `to botmux turn ${shortCorrelationId(identity.turnId)}`,
-        );
-      }
-      const dispatchAttempt = currentBotmuxDispatchAttempt;
-      if (startedAtMs !== undefined && shouldSuppressBridgeEmit(
-        { markTimeMs: startedAtMs, isLocal: false, finalText: marker.content },
-        completedAtMs + 5_001,
-        readSendMarkers(),
-        false,
-      )) {
-        log(`${cliName()} final_output suppressed (model already called botmux send)`);
-        emitTurnTerminal(identity.turnId, 'completed', undefined, dispatchAttempt);
-        return;
-      }
-      send({
-        type: 'final_output',
-        content: marker.content,
-        lastUuid: identity.lastUuid,
-        turnId: identity.turnId,
-        ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
-      });
-      emitTurnTerminal(identity.turnId, 'completed', undefined, dispatchAttempt);
-      return;
-    }
-
+  if (kind === 'final' && typeof payload.content === 'string') {
+    const startedAtMs = typeof payload.startedAtMs === 'number' ? payload.startedAtMs : undefined;
+    const completedAtMs = typeof payload.completedAtMs === 'number' ? payload.completedAtMs : Date.now();
     // Codex App keeps the app-server-generated id separately for diagnostics.
     // Routing must use its stable clientUserMessageId marker; legacy envelopes
     // intentionally omit it and fall back to the worker's frozen botmux turn.
@@ -5000,7 +4868,7 @@ function handleCodexAppMarker(body: string): void {
     const dispatchAttempt = currentBotmuxDispatchAttempt;
     if (startedAtMs !== undefined) {
       const sentByModel = shouldSuppressBridgeEmit(
-        { markTimeMs: startedAtMs, isLocal: false, finalText: marker.content },
+        { markTimeMs: startedAtMs, isLocal: false, finalText: payload.content },
         completedAtMs + 5_001,
         readSendMarkers(),
         false,
@@ -5013,7 +4881,7 @@ function handleCodexAppMarker(body: string): void {
     }
     send({
       type: 'final_output',
-      content: marker.content,
+      content: payload.content,
       lastUuid: turnId,
       turnId,
       ...(dispatchAttempt !== undefined ? { dispatchAttempt } : {}),
@@ -5172,10 +5040,6 @@ function markPromptReadyFromPty(): void {
 
 function markPromptReady(): void {
   if (isPromptReady) return;  // guard against duplicate calls
-  if (cliRestartInProgress && !replacementSpawnInProgress) {
-    log('Ignoring prompt-ready from backend generation being replaced');
-    return;
-  }
   stopBusyPatternIdleProbe();
   // Ready-gate: a startup selector's ❯ (cjadk et al.) falsely matches
   // readyPattern → the IdleDetector fires idle while the CLI is NOT actually at
@@ -5205,13 +5069,6 @@ function markPromptReady(): void {
     log('Idle detected during ready-gate settle; deferring prompt-ready until settle completes');
     return;
   }
-  const freshnessAction = freshnessInputQueue.onPromptReady();
-  if (freshnessAction === 'reload') {
-    log('Stale Codex App runner became idle; replacing it before releasing queued input');
-    void restartCliProcess('stale runner reached idle', { immediate: true, preservePending: true });
-    return;
-  }
-  if (freshnessAction === 'ignore') return;
   isPromptReady = true;
   clearSessionRenameInFlight();
   // An old backend can still report idle while its async teardown is running.
@@ -5241,34 +5098,6 @@ function markPromptReady(): void {
     renderer?.markNewTurn();  // exclude history replay from streaming card
   }
   send({ type: 'prompt_ready' });
-  if (
-    persistCodexRunnerBuildOnReady
-    && lastInitConfig?.cliId === 'codex-app'
-    && lastInitConfig.runnerBuildId
-  ) {
-    send({ type: 'runner_build_ready', runnerBuildId: lastInitConfig.runnerBuildId });
-    persistCodexRunnerBuildOnReady = false;
-  }
-  if (activeRestartAttemptId) {
-    // Defense in depth: only report a successful restart when a replacement
-    // backend is actually installed. Every legitimate ready path assigns
-    // `backend` before firing (spawnCli sets it, then idle/PTY callbacks run);
-    // a stray callback that reached here with no backend (e.g. a late stale
-    // generation slipping through a future gate change) must NOT claim success
-    // and consume the attempt id — leave it for the real replacement or the
-    // coordinator timeout.
-    if (backend) {
-      send({
-        type: 'restart_result',
-        attemptId: activeRestartAttemptId,
-        status: 'succeeded',
-        category: 'prompt_ready',
-      });
-      activeRestartAttemptId = undefined;
-    } else {
-      log('prompt-ready with no backend installed — deferring restart success receipt');
-    }
-  }
   // Send immediate idle snapshot so Lark card reflects idle status.
   // BUT: skip when messages are pending — flushPending() will immediately
   // make the CLI busy, so the idle state is transient and shouldn't appear
@@ -5588,7 +5417,6 @@ async function flushPending(): Promise<void> {
   // old CLI. Never let a new flush (including one triggered by the old
   // backend's idle/task-done callback) write across that restart boundary.
   if (cliRestartInProgress) return;
-  if (shouldHoldCodexRunnerInput(codexRunnerFreshness)) return;
   if (isFlushing) return;  // while loop in active flush will pick up new messages
   if (!backend || !cliAdapter) return;
   if (pendingMessages.length === 0 && pendingRawInputs.length === 0 && pendingSessionRename === null) return;  // nothing to flush — keep isPromptReady
@@ -5717,8 +5545,7 @@ async function flushPending(): Promise<void> {
     // rename. Some passthroughs (/clear, /new) can rotate the native session;
     // applying the canonical title last keeps the resume-picker label aligned.
     if (rawInputReady && pendingRawInputs.length > 0 && backend) {
-      const raw = freshnessInputQueue.takeRaw();
-      if (!raw) return;
+      const raw = pendingRawInputs.shift()!;
       await deliverRawInput(raw);
       return;
     }
@@ -5746,8 +5573,7 @@ async function flushPending(): Promise<void> {
       return;
     }
     while (pendingMessages.length > 0 && backend && cliAdapter) {
-      const item = freshnessInputQueue.takeNormal();
-      if (!item) break;
+      const item = pendingMessages.shift()!;
       const durableWrite = item.dispatchAttempt !== undefined;
       if (durableWrite) durableTurnInFlight = true;
       // Track as in-flight until the CLI returns to idle (markPromptReady).
@@ -5807,14 +5633,7 @@ async function flushPending(): Promise<void> {
         log('Refused durable Claude submit: transcript terminal bridge is unavailable');
         break;
       }
-      if (lastInitConfig?.cliId === 'codex-app') {
-        log(
-          `Writing Codex App input to PTY (flush): `
-          + `replyTurn=${shortCorrelationId(item.turnId)} chars=${msg.length}`,
-        );
-      } else {
-        log(`Writing to PTY (flush): "${msg.substring(0, 80)}"`);
-      }
+      log(`Writing to PTY (flush): "${msg.substring(0, 80)}"`);
       // Defense in depth: TmuxPipeBackend's send methods no longer throw on a
       // dead pane (they fire onExit instead), but writeInput can still throw
       // for other reasons (fs errors while resolving the JSONL, a future
@@ -5832,14 +5651,9 @@ async function flushPending(): Promise<void> {
           await codexRpcEngine.sendTurn(msg, item.turnId);
           result = { submitted: true };
         } else if (item.codexAppInput && cliAdapter.writeStructuredInput) {
-          result = await cliAdapter.writeStructuredInput(
-            backend,
-            msg,
-            item.codexAppInput,
-            { turnId: item.turnId },
-          );
+          result = await cliAdapter.writeStructuredInput(backend, msg, item.codexAppInput);
         } else {
-          result = await cliAdapter.writeInput(backend, msg, { turnId: item.turnId });
+          result = await cliAdapter.writeInput(backend, msg);
         }
         scheduleBusyPatternIdleProbe(`${cliName()} post-submit`);
       } catch (err: any) {
@@ -5864,11 +5678,6 @@ async function flushPending(): Promise<void> {
           item,
         );
         break;
-      }
-      if (lastInitConfig?.cliId === 'codex-app'
-        && item.turnId
-        && result?.submitted !== false) {
-        rememberBounded(submittedCodexAppReplyTurnIds, item.turnId);
       }
       // Persist any sessionId the adapter observed via authoritative sources
       // (Claude's pid file, Codex's history). Done independently of submit
@@ -5941,7 +5750,7 @@ function sendToPty(
   // old early-return silently dropped it after receiver had already persisted
   // DISPATCHED.
   if (cliRestartInProgress || !backend) {
-    freshnessInputQueue.enqueueNormal(next);
+    pendingMessages.push(next);
     log(`Queued message while CLI backend is restarting (${pendingMessages.length} pending)`);
     return true;
   }
@@ -5956,13 +5765,12 @@ function sendToPty(
     isFlushing,
     supportsTypeAhead,
     awaitingFirstPrompt,
-    holdForRunnerReload: shouldHoldCodexRunnerInput(codexRunnerFreshness),
   }) && cliAdapter.mergeQueuedInput === true;
   const mergedQueued = shouldMergeQueued && mergeQueuedCliInput(pendingMessages, next);
   if (mergedQueued) {
     log(`Merged queued message (${pendingMessages.length} pending): "${content.substring(0, 80)}" — ${cliName()} ${awaitingFirstPrompt ? 'still booting' : 'is busy'}`);
   } else {
-    freshnessInputQueue.enqueueNormal(next);
+    pendingMessages.push(next);
   }
   // User-override semantics: a fresh Lark message while a TUI prompt is "active"
   // takes precedence over the AI-detected prompt. The screen analyzer can be
@@ -5992,11 +5800,7 @@ function sendToPty(
   // delivers queued messages instead. See input-gate.ts; this fixes dispatch's
   // brief reaching Codex before its first idle and never landing.
   if (!sessionRenameInFlight && commandLineWritesPending === 0 && shouldWriteNow({
-    isPromptReady,
-    isFlushing,
-    supportsTypeAhead,
-    awaitingFirstPrompt,
-    holdForRunnerReload: shouldHoldCodexRunnerInput(codexRunnerFreshness),
+    isPromptReady, isFlushing, supportsTypeAhead, awaitingFirstPrompt,
   })) {
     if (!mergedQueued) log(`Writing to PTY: "${content.substring(0, 80)}"`);
     flushPending();  // fire-and-forget async; no-op if already flushing
@@ -6900,28 +6704,6 @@ async function spawnCli(
     }
   }
 
-  const replacementExpectedFresh = codexRunnerFreshness === 'restarting_fresh';
-  const freshness = decideCodexRunnerFreshness({
-    cliId: cfg.cliId,
-    adoptMode: cfg.adoptMode === true,
-    persistentReattach: willReattachPersistent,
-    replacementExpectedFresh,
-    currentBuildId: cfg.runnerBuildId,
-    persistedBuildId: cfg.persistedRunnerBuildId,
-  });
-  codexRunnerFreshness = freshness.state;
-  persistCodexRunnerBuildOnReady = freshness.persistOnReady;
-  log(`Codex runner freshness=${freshness.state} reason=${freshness.reason}`);
-  if (freshness.reason === 'replacement_reattached' && activeRestartAttemptId) {
-    send({
-      type: 'restart_result',
-      attemptId: activeRestartAttemptId,
-      status: 'failed',
-      category: 'spawn_failed',
-    });
-    activeRestartAttemptId = undefined;
-  }
-
   // The plugin set is stable only for the lifetime of one real CLI process.
   // A warm worker reattach keeps the existing Gateway and catalog untouched;
   // every fresh/resumed CLI spawn atomically refreshes both from current Bot config.
@@ -7486,8 +7268,10 @@ async function spawnCli(
       if (!existsSync(tsFile)) writeFileSync(tsFile, '');
     } catch { /* */ }
     try { mkdirSync(join(dataDir, 'attachments', cfg.larkAppId), { recursive: true }); } catch { /* */ }
-    // (Schedules moved into each bot's BOT_HOME — the whole dir is already
-    // bound readWrite for the owner, so no per-file pre-create is needed.)
+    // schedules.json is a shared RMW store (`botmux schedule`); pre-create as an
+    // empty map if absent (same content schedule-store itself writes) so a fresh
+    // install's first in-sandbox `schedule add` can bind+write it on bwrap too.
+    try { const sf = join(dataDir, 'schedules.json'); if (!existsSync(sf)) writeFileSync(sf, '{}'); } catch { /* */ }
 
     const mandatoryDenyPaths: string[] = [];
     const mandatoryDenyRegexes: string[] = [];
@@ -8254,15 +8038,6 @@ async function spawnCli(
   // prompt-ready — without this hook a follow-up arriving mid-task would sit
   // in pendingMessages forever once the task finishes.
   backend.onTaskDone?.(() => {
-    // Generation fence (matches the onAgentStatus above and the onExit below):
-    // a stale RiffBackend's `fetchAndEmitOutput(...).finally(taskDoneCb)` can
-    // resolve AFTER destroySession()/kill() during a restart (neither clears
-    // taskDoneCb nor awaits the in-flight fetch). If that late callback reached
-    // markPromptReady() while a replacement is spawning, it would ride through
-    // the global restart gate and emit a premature `restart_result: succeeded`,
-    // swallowing the replacement's true terminal outcome. Only the current
-    // backend generation may re-arm prompt-ready.
-    if (backend !== observedBackend) return;
     log(`${cliName()} task finished — re-arming prompt-ready for queued follow-ups`);
     markPromptReady();
   });
@@ -8348,16 +8123,6 @@ async function spawnCli(
     isPromptReady = false;
     currentBotmuxTurnId = undefined;
     currentBotmuxDispatchAttempt = undefined;
-    if (!intentionalRestart && activeRestartAttemptId) {
-      send({
-        type: 'restart_result',
-        attemptId: activeRestartAttemptId,
-        status: 'failed',
-        category: 'runner_exited',
-      });
-      activeRestartAttemptId = undefined;
-    }
-    if (!intentionalRestart) freshnessInputQueue.onReplacementFailed();
     if (intentionalRestart) {
       log('Suppressed claude_exit for intentional in-worker restart');
     } else {
@@ -8489,9 +8254,6 @@ function killCli(opts: { preservePending?: boolean } = {}): void {
   currentBotmuxTurnId = undefined;
   currentBotmuxDispatchAttempt = undefined;
   currentVcMeetingImTurnOrigin = undefined;
-  submittedCodexAppReplyTurnIds.clear();
-  pendingCodexAppSteerAckIds.clear();
-  acknowledgedCodexAppSteers.clear();
   if (sandboxCleanup) {
     try { sandboxCleanup(); } catch { /* */ }
     sandboxCleanup = null;
@@ -8531,7 +8293,6 @@ async function restartCliProcess(
   // of firing idle/task-done callbacks. Inputs accepted in that interval must
   // remain queued until a replacement backend has been installed.
   cliRestartInProgress = true;
-  replacementSpawnInProgress = false;
   rawInputRestartGate = true;
   // The Node worker stays alive through this restart, so the daemon will see
   // neither claude_exit nor worker-exit. Explicitly revoke the old turn's
@@ -8592,20 +8353,16 @@ async function restartCliProcess(
               rpcPluginGenerationPrepared = true;
               await engageCodexRpc(restartCfg);
             }
-            replacementSpawnInProgress = true;
             await spawnCli(restartCfg, { pluginGenerationPrepared: rpcPluginGenerationPrepared });
             await prepareCodexNativeTitleGeneration(restartCfg, codexRpcEngine);
-            replacementSpawnInProgress = false;
             if (codexRpcEngine) armRpcStartupDialogDismiss();
           } catch (err) {
-            replacementSpawnInProgress = false;
             cliRestartInProgress = false;
             await sendFatalWorkerErrorAndExit(err);
             return;
           }
         }
         cliRestartInProgress = false;
-        replacementSpawnInProgress = false;
         // Follow-up decision (pure, unit-tested in restart-followup-policy.ts):
         //  - cwd-move: a role-switch restart landed after restartCfg was
         //    snapshotted → CLI came up in the old cwd while daemon repinned to
@@ -8644,7 +8401,6 @@ async function restartCliProcess(
         if (isPromptReady) void flushPending();
       }, 500);
     } catch (err) {
-      replacementSpawnInProgress = false;
       cliRestartInProgress = false;
       try {
         await sendFatalWorkerErrorAndExit(err);
@@ -8769,14 +8525,6 @@ function startWebServer(host: string, preferredPort?: number): Promise<number> {
 
         const startAttach = (cols: number, rows: number) => {
           if (cp) return;
-          // Why: a prior web resize may leave the shared tmux window in manual mode.
-          // `largest` restores the shared default without letting a smaller/newer
-          // viewer resize every other attached client.
-          spawnSync('tmux', ['set-option', '-t', tmuxTarget, 'window-size', 'largest'], {
-            stdio: 'ignore',
-            env: tmuxEnv() as { [key: string]: string },
-            timeout: 3000,
-          });
           // Defense in depth: view-capability clients attach through tmux's
           // own read-only mode as well as the WebSocket input gate below.
           cp = pty.spawn('tmux', [
@@ -9871,15 +9619,6 @@ async function sendFatalWorkerErrorAndExit(
 ): Promise<void> {
   if (fatalWorkerErrorPending) return;
   fatalWorkerErrorPending = true;
-  if (activeRestartAttemptId) {
-    await sendAndFlush({
-      type: 'restart_result',
-      attemptId: activeRestartAttemptId,
-      status: 'failed',
-      category: 'spawn_failed',
-    });
-    activeRestartAttemptId = undefined;
-  }
   await sendAndFlush({
     type: 'error',
     message: err instanceof Error ? err.message : String(err),
@@ -9906,7 +9645,6 @@ process.on('message', async (raw: unknown) => {
       const initStartedAtMs = Date.now();
       if (lastInitConfig) return;  // already initialized
       lastInitConfig = msg;
-      activeRestartAttemptId = msg.restartAttemptId;
       sessionId = msg.sessionId;
       refreshTerminalViewToken();
       refreshTerminalWriteToken();
@@ -10260,10 +9998,9 @@ process.on('message', async (raw: unknown) => {
       // 覆盖"已确认裸 shell 启动失败"两种状态,一并入队。裸 shell 确认失败后
       // 这些 pending 不会再被 flush（与 pendingMessages 同款处理），符合预期。
       if (cliRestartInProgress || rawInputRestartGate || sessionRenameInFlight
-        || shouldHoldCodexRunnerInput(codexRunnerFreshness)
         || injectionFlushing || shouldDeferUserFlush(pendingInjections)
         || bareShellCheckInProgress || bareShellLaunchBlocked) {
-        freshnessInputQueue.enqueueRaw(msg);
+        pendingRawInputs.push(msg);
         log(`Deferred passthrough slash command until CLI input gate settles: ${msg.content}`);
       } else {
         await deliverRawInput(msg);
@@ -10322,8 +10059,6 @@ process.on('message', async (raw: unknown) => {
         log(`Restart request merged into in-flight restart${msg.updateWorkingDir ? ` (workingDir → ${msg.updateWorkingDir})` : ''}`);
         break;
       }
-      activeRestartAttemptId = msg.attemptId;
-      codexRunnerFreshness = 'restarting_fresh';
       // restart 杀死 CLI，在飞的 durable turn 随之死亡。对被杀的那次投递，主动发一个
       // 'ambiguous' 终端回执：CLI 被中途杀掉，副作用到底发没发是**真的无法证明**
       // （故不能报 'cancelled'），交由 daemon 的重试策略即时对账。不发的话 receipt 会

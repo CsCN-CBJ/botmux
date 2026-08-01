@@ -5,7 +5,6 @@
  */
 import type { DaemonSession } from './types.js';
 import * as sessionStore from '../services/session-store.js';
-import { dashboardEventBus } from './dashboard-events.js';
 
 /**
  * 重钉一个话题会话的工作目录（daemon 记录 = 唯一事实源）：
@@ -21,11 +20,4 @@ export function repinSessionWorkingDir(ds: DaemonSession, resolvedPath: string):
   // 两条改 cwd 的路径都必须清。
   ds.session.riffRepoDirs = undefined;
   sessionStore.updateSession(ds.session);
-  dashboardEventBus.publish({
-    type: 'session.update',
-    body: {
-      sessionId: ds.session.sessionId,
-      patch: { workingDir: resolvedPath },
-    },
-  });
 }

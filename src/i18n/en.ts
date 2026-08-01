@@ -1,6 +1,5 @@
 /** English translations — mirrors the keys defined in `zh.ts`. */
 export const messages: Record<string, string> = {
-  'worker.steer_accepted': 'Got it — guidance accepted',
   // ─── Card buttons ────────────────────────────────────────────────────────
   'card.btn.open_terminal': '🖥️ Open Web Terminal',
   'card.btn.open_writable_terminal': '🖥️ Open Writable Web Terminal',
@@ -228,9 +227,6 @@ export const messages: Record<string, string> = {
   'cmd.substitute.owner_only': '⚠️ Only owner/allowedUsers can change substitute mode.',
   'cmd.substitute.usage': 'Usage: @me /substitute status | on | off',
   'cmd.restart.in_progress': '🔄 Restarting {cliName}…',
-  'cmd.restart.succeeded': '✅ {cliName} is ready again.',
-  'cmd.restart.failed': '❌ Failed to restart {cliName}.',
-  'cmd.restart.timed_out': '⌛ {cliName} restart timed out before becoming ready.',
   'cmd.restart.terminated': '{cliName} has been terminated; it will auto-resume on your next message.',
   'cmd.cd.usage': 'Usage: /cd <path>\nExample: /cd ~/projects/my-app',
   'cmd.cd.switched': 'Working directory switched to {path}. It will resume there on your next message.',

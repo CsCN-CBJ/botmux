@@ -50,5 +50,14 @@
     "cliId": "pi",
     "allowedUsers": ["frank@company.com"],
     "workingDir": "~/projects"
+  },
+  {
+    "larkAppId": "cli_xxx_codebuddy",
+    "larkAppSecret": "your_secret_codebuddy",
+    "cliId": "codebuddy",
+    "cliPathOverride": "/data/home/bojuchen/.local/bin/codebuddy",
+    "model": "hy3-ioa",
+    "defaultWorkingDir": "/data/home/bojuchen/ai",
+    "allowedUsers": ["owner@company.com"]
   }
 ]

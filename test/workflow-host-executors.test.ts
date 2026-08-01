@@ -374,8 +374,7 @@ describe('botmuxScheduleExecutor invoke()', () => {
     const { botmuxScheduleExecutor } = await import(
       '../src/workflows/hostExecutors/botmux-schedule.js'
     );
-    const { getTask, setScheduleScope } = await import('../src/services/schedule-store.js');
-    setScheduleScope('cli_test'); // per-bot stores: ownerless inputs land in the bound scope
+    const { getTask } = await import('../src/services/schedule-store.js');
 
     const idemKey = 'wf_test_schedule_idem';
     const result = await botmuxScheduleExecutor.invoke(
@@ -408,8 +407,6 @@ describe('botmuxScheduleExecutor invoke()', () => {
     const { botmuxScheduleExecutor } = await import(
       '../src/workflows/hostExecutors/botmux-schedule.js'
     );
-    const { setScheduleScope } = await import('../src/services/schedule-store.js');
-    setScheduleScope('cli_test'); // per-bot stores: ownerless inputs land in the bound scope
 
     const idemKey = 'wf_test_schedule_rerun';
     const input = {
@@ -462,8 +459,6 @@ describe('botmuxScheduleExecutor invoke()', () => {
     const { botmuxScheduleExecutor, botmuxScheduleReconciler } = await import(
       '../src/workflows/hostExecutors/botmux-schedule.js'
     );
-    const { setScheduleScope } = await import('../src/services/schedule-store.js');
-    setScheduleScope('cli_test'); // per-bot stores: ownerless inputs land in the bound scope
     const idemKey = 'wf_test_schedule_lookup';
     const input = {
       name: 'Lookup',

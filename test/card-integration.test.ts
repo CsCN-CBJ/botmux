@@ -131,10 +131,6 @@ vi.mock('../src/core/worker-pool.js', async (importOriginal) => {
     forkWorker: vi.fn(),
     killWorker: vi.fn(),
     initWorkerPool: vi.fn(),
-    requestSessionRestart: vi.fn((_ds: any, observer: any) => {
-      void observer.notify('in_progress');
-      return { attemptId: 'attempt-card', joined: false };
-    }),
   };
 });
 
@@ -167,7 +163,7 @@ vi.mock('@larksuiteoapi/node-sdk', () => ({
 
 import { handleCardAction, type CardHandlerDeps } from '../src/im/lark/card-handler.js';
 import { scheduleCardPatch } from '../src/core/worker-pool.js';
-import { killWorker, forkWorker, requestSessionRestart } from '../src/core/worker-pool.js';
+import { killWorker, forkWorker } from '../src/core/worker-pool.js';
 import { sessionKey } from '../src/core/types.js';
 import type { DaemonSession } from '../src/core/types.js';
 import { buildStreamingCard } from '../src/im/lark/card-builder.js';
@@ -475,7 +471,7 @@ describe('Card integration: full event flow', () => {
 
       await handleCardAction(makeRestartEvent(ROOT_ID), deps, APP_ID);
 
-      expect(requestSessionRestart).toHaveBeenCalledWith(ds, expect.objectContaining({ source: 'card' }));
+      expect(workerSend).toHaveBeenCalledWith({ type: 'restart' });
       // The confirmation is delivered ephemeral to the clicker (group chat + an
       // operator open_id), not as a visible group reply.
       expect(vi.mocked(clientMod.sendEphemeralCard)).toHaveBeenCalledWith(
@@ -492,7 +488,7 @@ describe('Card integration: full event flow', () => {
 
       await handleCardAction(makeRestartEvent(ROOT_ID), deps, APP_ID);
 
-      expect(requestSessionRestart).toHaveBeenCalledWith(ds, expect.objectContaining({ source: 'card' }));
+      expect(forkWorker).toHaveBeenCalledWith(ds, '', false);
     });
 
     it('close should kill worker and remove session', async () => {
@@ -792,7 +788,7 @@ describe('Card integration: full event flow', () => {
 
       await handleCardAction(makeRestartEvent(ROOT_ID), deps, APP_ID);
 
-      expect(requestSessionRestart).toHaveBeenCalledWith(ds, expect.objectContaining({ source: 'card' }));
+      expect(workerSend).toHaveBeenCalledWith({ type: 'restart' });
       expect(vi.mocked(clientMod.sendEphemeralCard)).not.toHaveBeenCalled();
       expect(deps.sessionReply).toHaveBeenCalledWith(
         ROOT_ID, expect.stringContaining('重启'), undefined, APP_ID,

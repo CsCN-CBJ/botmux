@@ -28,6 +28,7 @@ export const CLI_ID_CHOICES: Record<string, CliId> = {
   '22': 'grok',
   '23': 'kiro-cli',
   '24': 'riff',
+  '25': 'codebuddy',
 };
 
 const VALID_CLI_IDS: ReadonlySet<string> = new Set(Object.values(CLI_ID_CHOICES));
@@ -62,6 +63,7 @@ const CLI_DISPLAY_LABELS: Record<CliId, string> = {
   'grok': 'Grok Build',
   'kiro-cli': 'Kiro',
   'riff': 'Riff',
+  'codebuddy': 'CodeBuddy',
 };
 
 /**

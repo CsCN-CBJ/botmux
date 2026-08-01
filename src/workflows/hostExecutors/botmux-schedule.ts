@@ -203,16 +203,7 @@ export const botmuxScheduleReconciler: ProviderReconciler = {
   },
 
   async readOnlyLookup(idempotencyKey, input) {
-    // Per-bot stores: address the OWNING bot's file from the frozen input's
-    // larkAppId (same routing createTask used) — a zero-arg getTask would
-    // depend on a process-global scope that non-daemon v3 runs (cli-run /
-    // goal-cli resume & reconciliation) never bind. A malformed input falls
-    // through to the existing validation path below instead of failing here.
-    let inputAppId: string | undefined;
-    if (input !== undefined) {
-      try { inputAppId = parseScheduleInput(input).larkAppId; } catch { /* validated below */ }
-    }
-    const task = getTask(idempotencyKey, inputAppId);
+    const task = getTask(idempotencyKey);
     if (!task) {
       return {
         found: false,

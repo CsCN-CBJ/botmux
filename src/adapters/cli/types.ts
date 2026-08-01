@@ -30,13 +30,6 @@ export type SubmitRecheckResult = boolean | {
   cliSessionId?: string;
 };
 
-/** Optional per-input correlation metadata. Adapters that do not need it may
- * ignore it; runner-based adapters use the immutable botmux/Lark turn id to
- * keep protocol ids separate from reply-routing ids. */
-export interface WriteInputContext {
-  turnId?: string;
-}
-
 /** A session discovered on disk that botmux can resume (import) into a topic —
  *  surfaced by `/adopt`'s second filter. Unlike an AdoptableSession (a live
  *  tmux/zellij pane botmux *observes*), this is a stored transcript botmux
@@ -197,7 +190,6 @@ export interface CliAdapter {
   writeInput(
     pty: PtyHandle,
     content: string,
-    context?: WriteInputContext,
   ): Promise<void | {
     submitted: boolean;
     cliSessionId?: string;
@@ -216,7 +208,6 @@ export interface CliAdapter {
     pty: PtyHandle,
     content: string,
     codexAppInput: CodexAppTurnInput,
-    context?: WriteInputContext,
   ): Promise<void | {
     submitted: boolean;
     cliSessionId?: string;
@@ -474,4 +465,4 @@ export interface CliAdapter {
   buildSessionRenameCommand?(title: string): string;
 }
 
-export type CliId = 'claude-code' | 'seed' | 'relay' | 'aiden' | 'coco' | 'codex' | 'codex-app' | 'cursor' | 'gemini' | 'genius' | 'opencode' | 'antigravity' | 'mtr' | 'hermes' | 'mira' | 'mir' | 'traex' | 'pi' | 'copilot' | 'oh-my-pi' | 'kimi' | 'grok' | 'kiro-cli' | 'riff';
+export type CliId = 'claude-code' | 'seed' | 'relay' | 'aiden' | 'coco' | 'codex' | 'codex-app' | 'cursor' | 'gemini' | 'genius' | 'opencode' | 'antigravity' | 'mtr' | 'hermes' | 'mira' | 'mir' | 'traex' | 'pi' | 'copilot' | 'oh-my-pi' | 'kimi' | 'grok' | 'kiro-cli' | 'riff' | 'codebuddy';

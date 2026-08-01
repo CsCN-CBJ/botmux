@@ -81,14 +81,6 @@ export interface SessionRow {
   /** Riff AIO Sandbox web terminal link. When set, the dashboard "Web终端"
    *  button opens this URL directly instead of building a local port link. */
   riffAccessUrl?: string;
-  /** Presentation enrichment stamped by the central dashboard read-model:
-   *  bot avatar URL from the live daemon descriptor.
-   *  Absent on older daemons — consumers must fall back. */
-  botAvatarUrl?: string;
-  /** Repo top-level dir name of workingDir, when it is a git repo. */
-  repoName?: string;
-  /** Current branch of workingDir; absent for detached HEAD / non-repo. */
-  gitBranch?: string;
 }
 
 export function feishuChatLink(chatId: string, brand: Brand = 'feishu'): string {
@@ -119,7 +111,6 @@ function sessionTokenUsage(s: Session, workingDir?: string): SessionTokenUsage |
     sessionId: s.sessionId,
     cliSessionId: s.cliSessionId,
     cwd: workingDir ?? s.workingDir,
-    larkAppId: s.larkAppId,
   });
 }
 
