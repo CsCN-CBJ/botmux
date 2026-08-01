@@ -110,6 +110,8 @@ chmod 600 ~/.botmux/qq.json
 }
 ```
 
+> 提示：`ownerUsers` 可以先不填。与机器人对话一次后，从桥接运行日志（`~/.pm2/logs/botmux-qq-out.log` 中的 `sender=...`）即可看到你自己的 `member_openid`；也可以直接在机器人里问“我的 openid 是什么”，它会从注入的会话上下文中读出来告诉你。确认后再把值补回 `ownerUsers` 即可。
+
 不要将此文件提交到 Git，也不要把 `AppSecret` 写入项目 `.env.example`、README 或源码。
 
 ### 配置字段
@@ -126,7 +128,7 @@ chmod 600 ~/.botmux/qq.json
 | `permissionMode` | 否 | CodeBuddy 权限模式。当前桥接代码固定传递 `default`；此字段已预留，接入外部沙盒后再启用为 `bypassPermissions`。 |
 | `workingDir` | 是 | CodeBuddy 的工作目录。 |
 | `allowedUsers` | 是 | 可用用户的 `member_openid` 数组；`["*"]` 表示开放给所有用户，仅建议测试使用。 |
-| `ownerUsers` | 否 | 机器主人的 `member_openid` 数组。仅用于向 Agent 注入可信身份与协作者谨慎操作提示，不会拒绝其他用户。 |
+| `ownerUsers` | 否 | 机器主人的 `member_openid` 数组。仅用于向 Agent 注入可信身份与协作者谨慎操作提示，不会拒绝其他用户。**该字段可先留空**：首次与机器人对话后，桥接日志会打印 `sender=<你的openid>`（也可直接问机器人“我的 openid 是什么”，它会从会话上下文中读出来回给你），拿到后再填回即可。 |
 | `sessionScope` | 否 | 会话复用范围，见下表。 |
 
 ### `sessionScope` 模式
