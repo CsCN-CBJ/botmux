@@ -16,9 +16,12 @@
 - 群聊任务超过 3 秒时先回复“正在处理…”，随后发送最终结果；
 - 同一群或私聊的机器人出站消息串行，并强制至少间隔 1 秒；
 - PM2 守护运行；
-- 运行日志包含入站事件、任务开始/完成/失败及 QQ 出站消息 ID。
+- 运行日志包含入站事件、任务开始/完成/失败及 QQ 出站消息 ID；
+- 附件（图片/文件）下载到本地并按时间戳目录 + 可读文件名（`img-1.jpg` 等）保存；
+- 附件分流策略：纯图片消息默认只回执本地路径、不调用 agent（`imageSendToAgent: true` 可改为直接交给 agent）；非图片文件消息始终只回执路径；任何带文字的消息总是交给 agent；
+- 每个会话记住最近一次附件路径，后续文字消息会自动带上该路径并提示 agent 仅在需求确实相关时才读取。
 
-尚未实现：附件与图片、引用消息解析、`/cancel`、权限确认桥接、数据库审计、沙盒/worktree、Markdown/文件回传和跨机器人协作路由。
+尚未实现：引用消息解析、`/cancel`、权限确认桥接、数据库审计、沙盒/worktree、Markdown/文件回传和跨机器人协作路由。
 
 ## 2. 前置条件
 
@@ -106,7 +109,8 @@ chmod 600 ~/.botmux/qq.json
   "sessionScope": "bot",
   "workingDir": "/data/home/用户名/ai",
   "allowedUsers": ["*"],
-  "ownerUsers": ["你的QQ member_openid"]
+  "ownerUsers": ["你的QQ member_openid"],
+  "imageSendToAgent": false
 }
 ```
 
@@ -130,6 +134,7 @@ chmod 600 ~/.botmux/qq.json
 | `allowedUsers` | 是 | 可用用户的 `member_openid` 数组；`["*"]` 表示开放给所有用户，仅建议测试使用。 |
 | `ownerUsers` | 否 | 机器主人的 `member_openid` 数组。仅用于向 Agent 注入可信身份与协作者谨慎操作提示，不会拒绝其他用户。**该字段可先留空**：首次与机器人对话后，桥接日志会打印 `sender=<你的openid>`（也可直接问机器人“我的 openid 是什么”，它会从会话上下文中读出来回给你），拿到后再填回即可。 |
 | `sessionScope` | 否 | 会话复用范围，见下表。 |
+| `imageSendToAgent` | 否 | 纯图片消息（无文字）是否直接交给 agent。`false`（默认）只回执"已保存到本地:<路径>"，不调用 agent，待用户后续用文字引用该路径再处理；`true` 则将图片路径作为 prompt 交给 agent。非图片文件附件不受此字段影响，始终只回执路径。 |
 
 ### `sessionScope` 模式
 
