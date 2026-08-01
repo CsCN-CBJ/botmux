@@ -165,7 +165,7 @@ function createCliRunner(config: QqBotConfig): CliRunner {
     id,
     executable,
     buildArgs: (_sessionId, resume, prompt) => [
-      'exec', '--json', ...(resume ? ['resume', '--last'] : []),
+      'exec', '--json', '--skip-git-repo-check', ...(resume ? ['resume', '--last'] : []),
       ...(config.model ? ['--model', config.model] : []),
       '--dangerously-bypass-approvals-and-sandbox', prompt,
     ],

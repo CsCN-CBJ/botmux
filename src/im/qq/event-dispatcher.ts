@@ -78,7 +78,9 @@ export async function startQqEventDispatcher(
       const conversationId = group ? data.group_openid : data.author?.user_openid;
       const content = typeof data.content === 'string' ? data.content.trim() : '';
       const eventId = data.id ?? data.event_id;
-      if (!senderId || !conversationId || !eventId || !content) return;
+      // Allow attachment-only messages (images/files) whose text `content` is empty;
+      // attachment URLs are collected from the raw event payload downstream.
+      if (!senderId || !conversationId || !eventId) return;
       void handlers.onMessage({
         eventId,
         messageId: data.id ?? eventId,
