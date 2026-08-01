@@ -25,6 +25,14 @@ interface QqBotConfig extends QqBotCredentials {
   permissionMode?: 'acceptEdits' | 'bypassPermissions' | 'default' | 'plan' | 'dontAsk' | 'auto';
   /** conversation: isolated per group/private chat; user: one session per sender; bot: one shared session for this bot. */
   sessionScope?: 'conversation' | 'user' | 'bot';
+  /**
+   * When true, attachment-only image messages (empty text) are still sent to the
+   * CLI agent. When false (default), image-only messages are acknowledged with a
+   * "downloaded to <path>" reply but not handed to the agent; the user can then
+   * reference the path in a later text message. Non-image file attachments are
+   * never auto-sent to the agent. Text messages always go to the agent.
+   */
+  imageSendToAgent?: boolean;
 }
 
 type SessionState = Record<string, string>;
@@ -236,6 +244,9 @@ async function main(): Promise<void> {
   if (migrateLegacySessions(config, sessions)) saveSessions(sessions);
   const queues = new Map<string, Promise<void>>();
   const outboundByConversation = new Map<string, Promise<void>>();
+  /** Most recent attachment paths per conversation, so a later text message can
+   * reference a file the user already sent without them copying the path. */
+  const recentAttachmentsByConversation = new Map<string, { path: string; type: 'image' | 'file'; at: number }>();
   const sendReply = async (message: QqInboundMessage, content: string, msgSeq = 1): Promise<void> => {
     const conversation = `${message.conversationType}:${message.conversationId}`;
     const previous = outboundByConversation.get(conversation) ?? Promise.resolve();
@@ -259,12 +270,58 @@ async function main(): Promise<void> {
         logger.warn(`[qq] ignored unauthorized sender; add this member_openid to allowedUsers: ${message.senderId}`);
         return;
       }
-      const attachments = await downloadQqAttachments(message.raw, message.eventId);
+      const attachments = await downloadQqAttachments(message.raw);
       if (attachments.length > 0) {
         logger.info(`[qq] attachments downloaded event=${message.eventId} count=${attachments.length}`);
       }
+      // Attachment-only (no text) routing:
+      // - image attachments go to the agent only if imageSendToAgent is true;
+      //   otherwise (and for any non-image file attachments) we just ack with the
+      //   local path so the user can reference it in a later text message.
+      // - text messages always go to the agent.
+      const hasText = message.content.length > 0;
+      if (!hasText && attachments.length === 0) {
+        logger.warn(
+          `[qq] empty message with no attachments ignored event=${message.eventId} ` +
+          `conversation=${message.conversationType}:${message.conversationId} sender=${message.senderId}`,
+        );
+        return;
+      }
+      if (!hasText && attachments.length > 0) {
+        const hasImage = attachments.some(attachment => attachment.type === 'image');
+        const sendToAgent = hasImage && (config.imageSendToAgent ?? false);
+        if (!sendToAgent) {
+          const listing = attachments
+            .map((attachment, index) => `${attachment.type === 'image' ? '图片' : '文件'} ${index + 1}：${attachment.path}`)
+            .join('\n');
+          const hint = hasImage
+            ? '如需我处理，请用文字告诉我具体需求（可引用上面的路径）。'
+            : '请用文字说明用途并引用上面的路径，我再处理。';
+          await sendReply(message, `已收到并保存到本地：\n${listing}\n${hint}`, 1);
+          logger.info(`[qq] attachment acknowledged (not sent to agent) event=${message.eventId}`);
+          // Remember the latest attachment so a follow-up text message can be
+          // routed to the agent with this path automatically.
+          const conv = `${message.conversationType}:${message.conversationId}`;
+          const latest = attachments[attachments.length - 1];
+          recentAttachmentsByConversation.set(conv, { path: latest.path, type: latest.type, at: Date.now() });
+          return;
+        }
+      }
       const key = sessionKey(config, message);
-      const prompt = buildUserPrompt(config, message, formatQqAttachments(attachments));
+      const conversationKey = `${message.conversationType}:${message.conversationId}`;
+      const recent = recentAttachmentsByConversation.get(conversationKey);
+      const recentHint = recent && attachments.length === 0
+        ? `[QQ 最近一次收到的附件（尚未处理）]\n${recent.type === 'image' ? '图片' : '文件'}：${recent.path}\n仅当本次消息确实需要该文件时才读取其内容；不要仅凭文件名或路径臆测，也不要主动展开探索。`
+        : '';
+      const prompt = buildUserPrompt(config, message, formatQqAttachments(attachments) + (recentHint ? `\n${recentHint}` : ''));
+      // This text message becomes the latest reference point; keep the newest attachment on record.
+      if (attachments.length > 0) {
+        const latest = attachments[attachments.length - 1];
+        recentAttachmentsByConversation.set(conversationKey, { path: latest.path, type: latest.type, at: Date.now() });
+      } else if (recent) {
+        // Keep the recent attachment if it is fresh (e.g. user is now explaining it).
+        recentAttachmentsByConversation.set(conversationKey, { ...recent, at: Date.now() });
+      }
       const previous = queues.get(key) ?? Promise.resolve();
       const task = previous.catch(() => undefined).then(async () => {
         logger.info(`[qq] turn started user_session=${key} source=${message.conversationType}`);
