@@ -17,6 +17,25 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
+/** Human-readable timestamp in Asia/Shanghai (UTC+8), e.g. "2026-08-24 20:30:35".
+ *  Useful for per-message logs where an ISO UTC string is hard to read.
+ *  Pass withWeekday=true to append the Chinese weekday, e.g.
+ *  "2026-08-24 20:30:35 周一". */
+export function formatBeijingTime(date: Date = new Date(), withWeekday = false): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(date);
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
+  const base = `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+  if (!withWeekday) return base;
+  const weekday = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', weekday: 'short' })
+    .formatToParts(date)
+    .find(p => p.type === 'weekday')?.value ?? '';
+  return `${base} ${weekday}`;
+}
+
 function fmt(msg: string, args: unknown[]): string {
   const extra = args.length ? ' ' + args.map(a => safeJson(a)).join(' ') : '';
   return `[${timestamp()}] ${msg}${extra}\n`;
